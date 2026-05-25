@@ -1,0 +1,61 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Conversation {
+  id        String         @id @default(uuid())
+  title     String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  messages  Message[]
+  logs      InferenceLog[]
+}
+
+model Message {
+  id             String        @id @default(uuid())
+  conversationId String
+  role           String        // 'user', 'assistant', 'system'
+  content        String
+  createdAt      DateTime      @default(now())
+  
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  inferenceLog   InferenceLog? // Connects to the inference log if this was an AI message
+}
+
+model InferenceLog {
+  id               String        @id @default(uuid())
+  conversationId   String?
+  messageId        String?       @unique // Connects directly to the response message
+  provider         String        // 'gemini', 'mock', etc.
+  model            String        // e.g. 'gemini-2.5-flash'
+  latencyMs        Int
+  tokensPrompt     Int?
+  tokensCompletion Int?
+  tokensTotal      Int?
+  status           String        // 'success', 'error'
+  errorMessage     String?
+  timestamp        DateTime      @default(now())
+  inputPreview     String        // First N characters or summary of prompt
+  outputPreview    String?       // First N characters of response
+  rawPayload       String        // Full JSON string of request/response
+  
+  conversation     Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  message          Message?      @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  metadata         Metadata[]
+}
+
+model Metadata {
+  id         String       @id @default(uuid())
+  logId      String
+  key        String
+  value      String
+  
+  inferenceLog InferenceLog @relation(fields: [logId], references: [id], onDelete: Cascade)
+
+  @@index([key])
+}
