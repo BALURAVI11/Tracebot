@@ -57,6 +57,7 @@ export default function ChatPage() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const activeAbortControllerRef = useRef<AbortController | null>(null);
+  const isStreamingRef = useRef(false);
 
   // Quick suggestion pills
   const suggestions = [
@@ -139,6 +140,9 @@ export default function ChatPage() {
   // Fetch messages if conversation changes
   useEffect(() => {
     if (currentId) {
+      // Prevent fetching and clobbering active message streams
+      if (isStreamingRef.current) return;
+
       const fetchMessages = async () => {
         setLoading(true);
         try {
@@ -195,6 +199,7 @@ export default function ChatPage() {
     
     setMessages((prev) => [...prev, userMessage]);
     setLoading(true);
+    isStreamingRef.current = true;
 
     // Instantiate AbortController for stream cancellation
     const controller = new AbortController();
@@ -320,6 +325,7 @@ export default function ChatPage() {
     } finally {
       setLoading(false);
       activeAbortControllerRef.current = null;
+      isStreamingRef.current = false;
     }
   };
 
@@ -327,6 +333,7 @@ export default function ChatPage() {
     if (activeAbortControllerRef.current) {
       activeAbortControllerRef.current.abort();
     }
+    isStreamingRef.current = false;
   };
 
   const handleNewChat = () => {
