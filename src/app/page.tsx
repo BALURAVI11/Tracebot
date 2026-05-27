@@ -48,6 +48,7 @@ export default function ChatPage() {
   // Local storage API Keys
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [geminiApiKey, setGeminiApiKey] = useState("");
+  const [serverKeys, setServerKeys] = useState({ hasGeminiKey: false, hasOpenaiKey: false });
   const [settingsOpen, setSettingsOpen] = useState(false);
   
   // Settings Form Inputs
@@ -96,14 +97,34 @@ export default function ChatPage() {
     setTempOpenaiKey(savedOpenai);
     setTempGeminiKey(savedGemini);
 
-    // Auto-select provider if key is present
-    if (savedOpenai) {
-      setSelectedProvider("openai");
-      setSelectedModel("gpt-4o-mini");
-    } else if (savedGemini) {
-      setSelectedProvider("gemini");
-      setSelectedModel("gemini-2.5-flash");
-    }
+    // Fetch server keys configuration
+    const fetchConfig = async () => {
+      try {
+        const res = await fetch("/api/config");
+        if (res.ok) {
+          const data = await res.json();
+          setServerKeys(data);
+          
+          // Auto-select provider if key is present locally or on server
+          if (savedOpenai) {
+            setSelectedProvider("openai");
+            setSelectedModel("gpt-4o-mini");
+          } else if (savedGemini) {
+            setSelectedProvider("gemini");
+            setSelectedModel("gemini-2.5-flash");
+          } else if (data.hasGeminiKey) {
+            setSelectedProvider("gemini");
+            setSelectedModel("gemini-2.5-flash");
+          } else if (data.hasOpenaiKey) {
+            setSelectedProvider("openai");
+            setSelectedModel("gpt-4o-mini");
+          }
+        }
+      } catch (e) {
+        console.error("Error fetching config:", e);
+      }
+    };
+    fetchConfig();
   }, []);
 
   // Synchronize active conversation ID with URL query parameters
@@ -234,24 +255,43 @@ export default function ChatPage() {
       const decoder = new TextDecoder();
       
       if (reader) {
+        let streamBuffer = "";
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
 
-          const chunkText = decoder.decode(value, { stream: true });
+          streamBuffer += decoder.decode(value, { stream: true });
           
-          if (chunkText) {
-            setMessages((prev) => {
-              const list = [...prev];
-              const lastIdx = list.length - 1;
-              if (lastIdx >= 0 && list[lastIdx].role === "assistant") {
-                list[lastIdx] = {
-                  ...list[lastIdx],
-                  content: list[lastIdx].content + chunkText
-                };
+          // Split streamBuffer into lines by newline
+          const lines = streamBuffer.split("\n");
+          // Retain any incomplete lines in buffer for subsequent reads
+          streamBuffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const cleanLine = line.trim();
+            if (!cleanLine) continue;
+
+            if (cleanLine.startsWith("data: ")) {
+              try {
+                // Parse the JSON string payload (e.g. "chunk of response")
+                const parsedText = JSON.parse(cleanLine.slice(6));
+                if (parsedText) {
+                  setMessages((prev) => {
+                    const list = [...prev];
+                    const lastIdx = list.length - 1;
+                    if (lastIdx >= 0 && list[lastIdx].role === "assistant") {
+                      list[lastIdx] = {
+                        ...list[lastIdx],
+                        content: list[lastIdx].content + parsedText
+                      };
+                    }
+                    return list;
+                  });
+                }
+              } catch (e) {
+                // Ignore incomplete line splits or non-JSON payloads
               }
-              return list;
-            });
+            }
           }
         }
       }
@@ -330,10 +370,10 @@ export default function ChatPage() {
     }
   };
 
-  // Check if active key exists for visual indication
+  // Check if active key exists for visual indication (local localStorage key or server-side env key)
   const hasSelectedProviderKey = 
-    (selectedProvider === "openai" && openaiApiKey) || 
-    (selectedProvider === "gemini" && geminiApiKey);
+    (selectedProvider === "openai" && (openaiApiKey || serverKeys.hasOpenaiKey)) || 
+    (selectedProvider === "gemini" && (geminiApiKey || serverKeys.hasGeminiKey));
 
   return (
     <div className="app-container">
@@ -468,10 +508,10 @@ export default function ChatPage() {
                 a local SQLite database.
               </p>
 
-              {!openaiApiKey && !geminiApiKey && (
+              {!openaiApiKey && !geminiApiKey && !serverKeys.hasGeminiKey && !serverKeys.hasOpenaiKey && (
                 <div className="onboarding-banner">
                   <p>
-                    💡 <strong>Test real completions:</strong> Go to <strong>API Credentials</strong> in the sidebar to paste your OpenAI or Gemini key. GPT-4o and Gemini will then return <strong>real live answers</strong> to your questions!
+                    💡 <strong>Test real completions:</strong> Go to <strong>API Credentials</strong> in the sidebar to paste your OpenAI or Gemini key, or configure them on your server environment. GPT-4o and Gemini will then return <strong>real live answers</strong> to your questions!
                   </p>
                 </div>
               )}
@@ -589,20 +629,34 @@ export default function ChatPage() {
               </p>
 
               <div className="settings-input-group">
-                <label>OpenAI API Key (GPT-4o model)</label>
+                <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>OpenAI API Key (GPT-4o model)</span>
+                  {serverKeys.hasOpenaiKey && (
+                    <span style={{ fontSize: "10px", background: "#e6f4ea", color: "#137333", padding: "2px 6px", borderRadius: "10px", fontWeight: "600" }}>
+                      ✓ Active on Server Env
+                    </span>
+                  )}
+                </label>
                 <input
                   type="password"
-                  placeholder="sk-proj-..."
+                  placeholder={serverKeys.hasOpenaiKey ? "•••••••••••••••• (Active server-side key detected)" : "sk-proj-..."}
                   value={tempOpenaiKey}
                   onChange={(e) => setTempOpenaiKey(e.target.value)}
                 />
               </div>
 
               <div className="settings-input-group">
-                <label>Gemini API Key (Gemini-2.5-Flash model)</label>
+                <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>Gemini API Key (Gemini-2.5-Flash model)</span>
+                  {serverKeys.hasGeminiKey && (
+                    <span style={{ fontSize: "10px", background: "#e6f4ea", color: "#137333", padding: "2px 6px", borderRadius: "10px", fontWeight: "600" }}>
+                      ✓ Active on Server Env
+                    </span>
+                  )}
+                </label>
                 <input
                   type="password"
-                  placeholder="AIzaSy..."
+                  placeholder={serverKeys.hasGeminiKey ? "•••••••••••••••• (Active server-side key detected)" : "AIzaSy..."}
                   value={tempGeminiKey}
                   onChange={(e) => setTempGeminiKey(e.target.value)}
                 />
