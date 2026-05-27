@@ -1,8 +1,8 @@
-# 🌿 OliveAI Ingestion & Telemetry Core (V2.1)
+# 🌿 OliveAI Ingestion & Telemetry Core (V2.2)
 
 An enterprise-grade, lightweight, and self-contained **LLM Inference Logging, Telemetry, and Observability Platform**. 
 
-Built with Next.js 15, TypeScript, SQLite, and Prisma, this system intercepts raw LLM calls, calculates real-time latency (Time-to-First-Token), parses exact token allocations, scrubs PII, and enriches logs with cost models—delivering everything to a visually stunning analytics control center via an asynchronous decoupled event queue.
+Built with Next.js 16, TypeScript, SQLite, and Prisma, this system intercepts raw LLM calls, calculates real-time latency (Time-to-First-Token), parses exact token allocations, scrubs PII, and enriches logs with cost models—delivering everything to a visually stunning analytics control center via an asynchronous decoupled event queue.
 
 ---
 
@@ -25,9 +25,10 @@ graph TD
 
 ---
 
-## ⚡ Core Features (V2.1)
+## ⚡ Core Features (V2.2 Upgrades)
 
-### 1. Multi-Turn Streaming Chat UI
+### 1. Multi-Turn Streaming Chat UI (with Clean SSE Parser)
+* **Clean SSE Chunk Parser:** Decodes the Server-Sent Events protocol (`data: "..."\n\n`) on the fly, buffering chunk fragments, stripping protocol metadata, and displaying **only clean, beautifully rendered chatbot responses** in real-time.
 * **Real-time Typewriter Flow:** Web `ReadableStream` generators stream AI responses word-by-word instantly with a fluid typing pace.
 * **Model Dropdown Selector:** Switch between **Gemini-2.5-Flash (API)**, **OpenAI GPT-4o-Mini (Ultra Fast! ⚡)**, **OpenAI GPT-4o (Live Stream)**, and **Mock Gemini** streams directly from the header.
 * **Session Manager:** Create new chats, review message counts, cascadingly delete sessions, and seamlessly switch between conversations.
@@ -43,14 +44,16 @@ graph TD
 ### 3. Developer & Privacy Shields
 * **PII Redaction Engine (`redactPII`):** A high-performance regex scrubber built directly into the SDK pipeline. Automatically masks **Emails**, **Credit Cards**, and **Phone Numbers** with structured redact tags before ingestion.
 * **Event-Driven Telemetry Queue (`telemetryEmitter`):** Leverages Node's native `EventEmitter` to decouple HTTP requests from database writes, executing ingestion asynchronously in the background.
-* **Local Credentials Sandboxing:** Paste your `OPENAI_API_KEY` or `GEMINI_API_KEY` directly inside the UI. Keys are stored safely in your browser sandbox (`localStorage`) and passed only over secure connections to call AI streams—never logged or saved in SQLite.
+* **Hybrid Credentials Sandboxing (Server Env + Local Storage):** 
+  * Paste your `OPENAI_API_KEY` or `GEMINI_API_KEY` directly inside the UI where they remain securely in your local browser sandbox (`localStorage`).
+  * Alternatively, host it with **Server Environment Variables** on Docker or Render. The UI automatically checks for server-side keys without leaking secrets, auto-selects the live Gemini model on launch, and renders a **`✓ Active on Server Env`** badge in the settings drawer for a zero-configuration end-user experience.
 * **Robust Stream Error Handling:** Early-stage endpoint authorization crashes (e.g. invalid keys or quota limits) are intercepted immediately by the SDK, logged in SQLite as failures, and returned as clean JSON diagnostics instead of breaking browser fetch loops.
 
 ---
 
 ## 🛠️ Technology Stack
 
-* **Languages & Runtimes:** TypeScript, Node.js (v20+), Next.js 15 (App Router), React 19
+* **Languages & Runtimes:** TypeScript, Node.js (v20+), Next.js 16 (App Router), React 19
 * **Database & ORM:** SQLite, Prisma ORM (v6.4.1)
 * **AI & API Layer:** Google Gen AI SDK (`@google/genai`), OpenAI Completions API
 * **DevOps & Orchestration:** Docker, Docker Compose, Kubernetes (K8s), Server-Sent Events (SSE)
@@ -96,46 +99,53 @@ Best for containerized local isolation with **100% database persistence**:
 
 ---
 
-### Option 3: Deploying Live to the Cloud (Railway or Render)
-SQLite database files live inside local containers. To deploy this live with a persistent drive, do **not** use serverless platforms like Vercel. Instead, use container platforms:
+### Option 3: Deploying Live to the Cloud (Render)
+To deploy this live on Render as a containerized web service with environment variables and secure SQLite persistence:
 
-#### A. Deploying on Railway (Fastest)
 1. Push your repository code to a **GitHub** repo.
-2. Go to [Railway.app](https://railway.app) and select **New Project > Deploy from GitHub**.
-3. Select your repository.
-4. Once deployed, go to the service's **Settings** tab:
-   - Scroll to **Volumes** and click **Add Volume**.
-   - Set the Mount Path to `/app/data` (this maps your persistent disk to the database).
-5. In the **Variables** tab, add your optional `OPENAI_API_KEY` or `GEMINI_API_KEY`.
-6. Scroll to **Networking** in settings and click **Generate Domain** to get your public HTTPS URL!
-
-#### B. Deploying on Render (Docker Service)
-1. Push your code to **GitHub**.
-2. Sign up on [Render.com](https://render.com) and click **New > Web Service**.
-3. Select your repo, set **Runtime** to `Docker` (Render reads our production `Dockerfile` automatically).
-4. Under **Advanced**, click **Add Environment Variable** (optional keys).
-5. Click **Add Disk** (requires Render's Starter plan or higher):
-   - **Mount Path:** `/app/data`
-   - **Size:** `1 GiB`
+2. Go to your [Render Dashboard](https://dashboard.render.com/) and click **New > Web Service**.
+3. Select your repository. Set **Runtime** to `Docker` (Render will automatically read the production `Dockerfile`).
+4. In the **Environment** tab, click **Add Environment Variable** to load your API keys and custom configurations:
+   * `GEMINI_API_KEY` = `your-gemini-api-key`
+   * `OPENAI_API_KEY` = `your-openai-api-key`
+   * `PORT` = `1000` *(optional custom port if required)*
+5. Click **Add Disk** to attach a persistent drive (Render's Starter tier or higher) to secure SQLite files across redeployments:
+   * **Mount Path:** `/app/data`
+   * **Size:** `1 GiB`
 6. Click **Create Web Service**!
+   * The app will build and deploy. Once live, the frontend will automatically detect the server environment variables, unlock the live providers, auto-select Gemini, and stream clean formatted chatbot text.
 
 ---
 
 ### Option 4: Enterprise Production Orchestration (Kubernetes)
-Deploy the system on self-hosted Kubernetes clusters using our generated manifest file:
-1. Build and tag your container image:
+Deploy the system on self-hosted Kubernetes clusters (such as Docker Desktop K8s, Minikube, or GKE) using our generated manifest file:
+
+1. **Verify your local cluster context is active:**
+   ```bash
+   kubectl cluster-info
+   ```
+2. **Inject your secure API keys into a Kubernetes Secret:**
+   ```bash
+   kubectl create secret generic oliveai-api-secrets \
+     --from-literal=gemini-key="YOUR_GEMINI_KEY" \
+     --from-literal=openai-key="YOUR_OPENAI_KEY"
+   ```
+3. **Build and tag your container image:**
    ```bash
    docker build -t oliveai-telemetry-core:latest .
    ```
-2. Apply the manifest file containing the `PersistentVolumeClaim` (PVC), single-replica Deployment (safe for SQLite file locks), and LoadBalancer Service mapping:
+4. **Deploy the manifests:**
+   It deploys the `PersistentVolumeClaim` (PVC), single-replica Deployment (safe for SQLite file locks), and LoadBalancer Service mapping:
    ```bash
    kubectl apply -f k8s-deployment.yaml
    ```
-3. Check pod status:
+5. **Monitor deployment health:**
    ```bash
    kubectl get pods,pvc,svc -l app=oliveai-app
    ```
-4. Access the application via the LoadBalancer's **External IP** on port `80`.
+6. **Access the application:**
+   For local clusters like Docker Desktop, navigate your browser directly to:
+   👉 **[http://localhost](http://localhost)** (Port 80 LoadBalancer proxy).
 
 ---
 
