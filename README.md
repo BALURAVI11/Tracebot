@@ -6,7 +6,7 @@ Built with Next.js 16, TypeScript, SQLite, and Prisma, this system intercepts ra
 
 ---
 
-## 🏛️ System Architecture
+## 🏛️ System Architecture & Data Flow
 
 ```mermaid
 graph TD
@@ -23,31 +23,44 @@ graph TD
     Redactor -->|9. Store Clean Telemetry| SQLite[(SQLite Database)]
 ```
 
+### Architectural Flow Breakdown:
+1. **Prompt Interception:** The client sends prompts to `/api/chat`. The backend initiates the call wrapped within the custom `InferenceLogger.traceStream()` SDK wrapper.
+2. **Watchdog Stream Construction:** The SDK resolves authentication, fires the LLM provider API request, captures the **Time-to-First-Token (TTFT)**, and channels raw text chunks through a customized Server-Sent Events (SSE) stream back to the UI.
+3. **Decoupled Event Emission:** Upon stream termination, the SDK logs overall generation metrics and dispatches an asynchronous `inference:completed` or `inference:failed` event via Node's native `EventEmitter`. This keeps the active chat thread blazing fast and completely unblocked by database operations.
+4. **PII Redaction & DB Commit:** A background queue listener intercepts the event, scrubs PII (emails, cards, phone numbers), calculates token throughput (tokens/sec) and pricing, and commits the clean records to the local SQLite database.
+
 ---
 
-## ⚡ Core Features (V2.2 Upgrades)
+## 📊 Database Schema Design Decisions
 
-### 1. Multi-Turn Streaming Chat UI (with Clean SSE Parser)
-* **Clean SSE Chunk Parser:** Decodes the Server-Sent Events protocol (`data: "..."\n\n`) on the fly, buffering chunk fragments, stripping protocol metadata, and displaying **only clean, beautifully rendered chatbot responses** in real-time.
-* **Real-time Typewriter Flow:** Web `ReadableStream` generators stream AI responses word-by-word instantly with a fluid typing pace.
-* **Model Dropdown Selector:** Switch between **Gemini-2.5-Flash (API)**, **OpenAI GPT-4o-Mini (Ultra Fast! ⚡)**, **OpenAI GPT-4o (Live Stream)**, and **Mock Gemini** streams directly from the header.
-* **Session Manager:** Create new chats, review message counts, cascadingly delete sessions, and seamlessly switch between conversations.
-* **URL-State Sync:** Active conversation IDs are dynamically synchronized with browser URL parameters (e.g. `?c=uuid`), keeping your active conversation preserved when you **refresh the page**!
-* **Request Cancellation:** Integrate `AbortController` signal hooks with a glowing red **"Stop Generating"** button to abort streaming queries mid-flight safely.
+To achieve both **real-time chat fluidness** and **extensive logging observability**, we designed a relational SQLite schema structured via Prisma ORM:
 
-### 2. Analytics & Observability Dashboard
-* **Metrics KPI Grid:** Real-time counters showing Total Requests, Ingestion Quality (Success Rate %), Average Latency (ms), and Running Costs ($).
-* **Custom SVG Charts:** Stunning, responsive visual graph curves for Response Latency Trends and Token usage divisions (Prompt vs. Completion) built with zero external library bundle overhead.
-* **Searchable Log Stream:** Real-time audit logs table with keyword search and Success/Error filters.
-* **Log Inspector Drawer:** Slide-out drawer displaying detailed latencies, cost rates, custom tags, input-output previews, and pre-formatted raw JSON telemetry payloads with copy-to-clipboard buttons.
+### 1. Separation of Concerns (State vs. Telemetry)
+* **`Conversation` & `Message` Tables:** Store the user chat state. They are kept highly compact and indexed so that the chatbot UI can retrieve and render conversation bubbles instantly.
+* **`InferenceLog` Table:** Holds telemetry-specific metadata (exact latency, TTFT, prompt/completion tokens, pricing metrics, raw payload configurations, error stack traces, and input/output previews). 
+* **Relational Mapping:** Telemetry logs are linked to `Message` and `Conversation` via foreign keys. This design decouples regular chat loading from telemetry analysis, ensuring that regular users experience zero database drag, while administrators can slide out detail drawers on the dashboard on-demand.
 
-### 3. Developer & Privacy Shields
-* **PII Redaction Engine (`redactPII`):** A high-performance regex scrubber built directly into the SDK pipeline. Automatically masks **Emails**, **Credit Cards**, and **Phone Numbers** with structured redact tags before ingestion.
-* **Event-Driven Telemetry Queue (`telemetryEmitter`):** Leverages Node's native `EventEmitter` to decouple HTTP requests from database writes, executing ingestion asynchronously in the background.
-* **Hybrid Credentials Sandboxing (Server Env + Local Storage):** 
-  * Paste your `OPENAI_API_KEY` or `GEMINI_API_KEY` directly inside the UI where they remain securely in your local browser sandbox (`localStorage`).
-  * Alternatively, host it with **Server Environment Variables** on Docker or Render. The UI automatically checks for server-side keys without leaking secrets, auto-selects the live Gemini model on launch, and renders a **`✓ Active on Server Env`** badge in the settings drawer for a zero-configuration end-user experience.
-* **Robust Stream Error Handling:** Early-stage endpoint authorization crashes (e.g. invalid keys or quota limits) are intercepted immediately by the SDK, logged in SQLite as failures, and returned as clean JSON diagnostics instead of breaking browser fetch loops.
+### 2. Extensible Tag Logging via metadata Table
+* Real-world LLM tracking requires saving variable tags (e.g. `client_platform`, `system_env`, `ingestion_level`). 
+* Instead of bloating the main `InferenceLog` table with endless columns or using loose, hard-to-index JSON blobs in SQLite, we designed a dedicated relational **`Metadata` table** containing key-value pair fields linked to the parent log. This guarantees absolute indexing speed and unlimited flexibility.
+
+---
+
+## ⚖️ Tradeoffs Made
+
+During implementation, we prioritized **zero-ops ease of use, local reproducibility, and runtime responsiveness**, resulting in the following engineering tradeoffs:
+
+### 1. SQLite File Locking vs. Multi-Replica Horizontal Scaling
+* **The Tradeoff:** SQLite database files use write-ahead logging (WAL) locks. If multiple server nodes in a Kubernetes cluster attempt to write to SQLite concurrently, it will trigger write-lock contentions.
+* **The Decision:** We restricted the deployment replica count strictly to `1` inside both the Docker and Kubernetes deployment files. This trades off distributed horizontal scalability for structural simplicity. It eliminates external database maintenance (Postgres/MySQL) and ensures a self-contained, run-anywhere deployment.
+
+### 2. Node native `EventEmitter` Queue vs. Persistent Message Brokers (Redis/RabbitMQ)
+* **The Tradeoff:** We decoupled logging using Node's in-memory `EventEmitter` rather than introducing a persistent queue like Redis (BullMQ) or RabbitMQ.
+* **The Decision:** This choice ensures the app stays extremely lightweight with zero external infrastructure dependencies. The tradeoff is that in-memory queues are volatile. If the container abruptly crashes before buffered events ship to `/api/logs`, those logs will be lost. We chose local runtime efficiency and easy deployments over transaction persistence guarantees.
+
+### 3. Client Sandbox (`localStorage`) vs. Server Keys Fallback
+* **The Tradeoff:** Handling API keys in the client vs. the server.
+* **The Decision:** We built a hybrid approach. The UI sandbox securely stores optional keys in browser `localStorage` and never logs them. However, for team setups, users can set `GEMINI_API_KEY` directly inside Render's environment variables. The server automatically detects these keys, hides them from the frontend, and enables direct out-of-the-box streaming chat for all visiting users.
 
 ---
 
@@ -57,11 +70,11 @@ graph TD
 * **Database & ORM:** SQLite, Prisma ORM (v6.4.1)
 * **AI & API Layer:** Google Gen AI SDK (`@google/genai`), OpenAI Completions API
 * **DevOps & Orchestration:** Docker, Docker Compose, Kubernetes (K8s), Server-Sent Events (SSE)
-* **Design & Styling:** Vanilla CSS (Minimalist Editorial Design System - Warm Cream, Charcoal Black, Paper White, Slated Grey)
+* **Design & Styling:** Vanilla CSS (Minimalist Warm Cream, Charcoal Black, Paper White, Slated Grey)
 
 ---
 
-## 🚀 How to Run & Deploy
+## 🚀 Step-by-Step Setup Instructions
 
 ### Option 1: Local Development (npm)
 Best for quick testing and local edits:
@@ -113,11 +126,11 @@ To deploy this live on Render as a containerized web service with environment va
    * **Mount Path:** `/app/data`
    * **Size:** `1 GiB`
 6. Click **Create Web Service**!
-   * The app will build and deploy. Once live, the frontend will automatically detect the server environment variables, unlock the live providers, auto-select Gemini, and stream clean formatted chatbot text.
+   * Once live, the frontend will automatically detect the server environment variables, unlock the live providers, auto-select Gemini, and stream clean formatted chatbot text.
 
 ---
 
-### Option 4: Enterprise Production Orchestration (Kubernetes)
+### Option 4: Production Orchestration (Kubernetes)
 Deploy the system on self-hosted Kubernetes clusters (such as Docker Desktop K8s, Minikube, or GKE) using our generated manifest file:
 
 1. **Verify your local cluster context is active:**
@@ -149,52 +162,17 @@ Deploy the system on self-hosted Kubernetes clusters (such as Docker Desktop K8s
 
 ---
 
-## 🧪 Automated E2E Telemetry V2 Verification
+## 🔮 Future Roadmap (What We Would Improve with More Time)
 
-We created an automated validation script simulating mixed-provider telemetry traffic. The script successfully processed:
-1. A **Gemini** query returning model tokens and contents.
-2. An **OpenAI** GPT-4o request with OpenAI structure.
-3. An **Anthropic** Claude-3 request with Anthropic structure.
-4. A forced **Auth Failure Error** state to verify logging robustness.
+If we were scaling this logging platform to support enterprise production workloads processing millions of queries a day, we would implement the following improvements:
 
-Run the verification test locally:
-```bash
-npx tsx src/scripts/test-sdk.ts
-```
-
-### Direct E2E Console Audit Output:
-```bash
-==================================================
-🧪 STARTING V2 TELEMETRY SYSTEM AUDIT & TEST RUN
-==================================================
-🧹 Wiping database to guarantee fresh audit metrics...
-✅ Database cleared.
-
-📥 Initiating streaming trace with PII contents...
-👉 Raw Input Prompt: 'My credit card is 4111-1111-1111-1111 and my email is dev@olive.ai. Redact this!'
-👉 Combined Streamed Response: Understood. The data privacy engine has detected a sensitive email address test@gmail.com and successfully scrubbed it. All telemetry records are sanitized.
-✅ Streaming consumption finished. Telemetry Event emitted.
-
-⏳ Waiting 2.5 seconds for background decoupled EventEmitter queue to flush...
-
-🔎 AUDITING SQLITE TELEMETRY TABLES FOR PII COMPLIANCE:
-
-📊 Log Ingested Successfully! ID: d1e1f070-bb52-4e68-bd91-aa6b02f69d3d
-  Provider:      mock-stream-provider
-  Model:         editorial-gpt-minimal
-  Status:        🟢 SUCCESS
-  Latency:       509 ms
-
-🔒 SANITIZATION CHECKS:
-  1. Input Preview:      "My credit card is [REDACTED_CARD] and my email is [REDACTED_EMAIL]. Redact this!"
-  2. Output Preview:     "Understood. The data privacy engine has detected a sensitive email address [REDACTED_EMAIL] and successfully scrubbed it. All telemetry records are sanitized."
-✅ PASS: All emails and credit cards replaced by [REDACTED_EMAIL] and [REDACTED_CARD] tags inside previews!
-
-⚙️ STREAM METRICS AND ENRICHED TAGS:
-    🏷️  client_platform: node_cli_test
-    🏷️  ingestion_level: high_security
-    🏷️  time_to_first_token_ms: 103
-    🏷️  stream_enabled: true
-    🏷️  tokens_per_second: 141.45
-    ...
-```
+1. **ClickHouse or PostgreSQL Data Store Migration:** 
+   We would swap SQLite for **ClickHouse** (optimized for columnar storage, massive analytics, and high-frequency writes) or a dedicated **PostgreSQL cluster** with connection pooling. This would allow us to lift the 1-replica lock and scale out Next.js containers horizontally to hundreds of replicas in Kubernetes.
+2. **Persistent Messaging Brokers (Redis / RabbitMQ):**
+   Instead of Node's native memory `EventEmitter`, we would route background telemetry logging through a durable, persistent queue like **BullMQ (Redis)** or **RabbitMQ**. This would ensure zero data loss—if a logging server crashes mid-stream, the event remains safely stored in the queue and is retried once the container boots back up.
+3. **percentile Heatmaps & Latency Anomalies:**
+   We would expand our custom SVG dashboard charts with aggregations for **p95, p99 latencies**, and monthly cost projections. We would also implement standard anomaly detection algorithms to trigger automated alerts (via Slack or Webhooks) when an LLM provider's latency suddenly doubles.
+4. **Advanced ML-based PII Redaction:**
+   We would replace or complement our regex-based PII scrubber with a lightweight named-entity recognition (NER) model (such as SpaCy or a small BERT model) running locally within the ingestion pipeline to scrub unstructured personal data like addresses, usernames, and secret credentials that regex cannot easily catch.
+5. **Role-Based Access Control (RBAC):**
+   We would integrate an authentication framework like **NextAuth.js** to secure the `/dashboard` route. This would introduce developer workspaces, API client keys, and multi-tenant isolation, so developers could monitor only their specific telemetry feeds.
