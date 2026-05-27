@@ -44,7 +44,7 @@ spec:
               value: "" # Expose Gemini Key or reference a Kubernetes Secret
           volumeMounts:
             - name: sqlite-storage
-              mountPath: /app/prisma
+              mountPath: /app/data
       volumes:
         - name: sqlite-storage
           persistentVolumeClaim:

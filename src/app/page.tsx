@@ -78,9 +78,17 @@ export default function ChatPage() {
     }
   };
 
-  // Load API Keys from LocalStorage on mount
+  // Load API Keys and URL-state Sync on mount
   useEffect(() => {
     fetchConversations();
+
+    // Recover active conversation from URL search parameter on page refresh
+    const searchParams = new URLSearchParams(window.location.search);
+    const conversationIdFromUrl = searchParams.get("c");
+    if (conversationIdFromUrl) {
+      setCurrentId(conversationIdFromUrl);
+    }
+
     const savedOpenai = localStorage.getItem("openai_api_key") || "";
     const savedGemini = localStorage.getItem("gemini_api_key") || "";
     setOpenaiApiKey(savedOpenai);
@@ -91,12 +99,21 @@ export default function ChatPage() {
     // Auto-select provider if key is present
     if (savedOpenai) {
       setSelectedProvider("openai");
-      setSelectedModel("gpt-4o");
+      setSelectedModel("gpt-4o-mini");
     } else if (savedGemini) {
       setSelectedProvider("gemini");
       setSelectedModel("gemini-2.5-flash");
     }
   }, []);
+
+  // Synchronize active conversation ID with URL query parameters
+  useEffect(() => {
+    if (currentId) {
+      window.history.pushState(null, "", `?c=${currentId}`);
+    } else {
+      window.history.pushState(null, "", window.location.pathname);
+    }
+  }, [currentId]);
 
   // Fetch messages if conversation changes
   useEffect(() => {
@@ -136,7 +153,7 @@ export default function ChatPage() {
     // Adjust selectors
     if (tempOpenaiKey && selectedProvider === "mock") {
       setSelectedProvider("openai");
-      setSelectedModel("gpt-4o");
+      setSelectedModel("gpt-4o-mini");
     } else if (tempGeminiKey && selectedProvider === "mock" && !tempOpenaiKey) {
       setSelectedProvider("gemini");
       setSelectedModel("gemini-2.5-flash");
@@ -212,7 +229,7 @@ export default function ChatPage() {
       
       setMessages((prev) => [...prev, assistantMessage]);
 
-      // Read chunked streaming body in real-time
+      // Read raw chunked streaming body in real-time
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
       
@@ -223,17 +240,19 @@ export default function ChatPage() {
 
           const chunkText = decoder.decode(value, { stream: true });
           
-          setMessages((prev) => {
-            const list = [...prev];
-            const lastIdx = list.length - 1;
-            if (lastIdx >= 0 && list[lastIdx].role === "assistant") {
-              list[lastIdx] = {
-                ...list[lastIdx],
-                content: list[lastIdx].content + chunkText
-              };
-            }
-            return list;
-          });
+          if (chunkText) {
+            setMessages((prev) => {
+              const list = [...prev];
+              const lastIdx = list.length - 1;
+              if (lastIdx >= 0 && list[lastIdx].role === "assistant") {
+                list[lastIdx] = {
+                  ...list[lastIdx],
+                  content: list[lastIdx].content + chunkText
+                };
+              }
+              return list;
+            });
+          }
         }
       }
 
@@ -420,6 +439,7 @@ export default function ChatPage() {
               className="minimal-select"
             >
               <option value="mock:mock-gemini-stream">Mock Gemini Model (Stream)</option>
+              <option value="openai:gpt-4o-mini">OpenAI GPT-4o-Mini (Ultra Fast! ⚡)</option>
               <option value="openai:gpt-4o">OpenAI GPT-4o (Live Stream)</option>
               <option value="gemini:gemini-2.5-flash">Gemini 2.5 Flash (Live Stream)</option>
             </select>

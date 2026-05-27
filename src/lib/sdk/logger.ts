@@ -338,7 +338,7 @@ export class InferenceLogger {
               firstTokenTime = performance.now();
             }
             fullContent += chunk;
-            controller.enqueue(encoder.encode(chunk));
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
           }
           
           controller.close();

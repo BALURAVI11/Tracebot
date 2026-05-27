@@ -25,8 +25,13 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
+# Enforce the persistent data directory URL inside the container environment
+ENV DATABASE_URL="file:/app/data/dev.db"
 
-# Add migration startup script and build static assets
+# Create a dedicated directory for our SQLite database files
+RUN mkdir -p /app/data
+
+# Add migration startup script and copy build configurations
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules

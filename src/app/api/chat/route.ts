@@ -27,7 +27,7 @@ async function* mockStreamGenerator(promptText: string) {
   const words = mockText.split(" ");
   for (let i = 0; i < words.length; i++) {
     const chunk = (i === 0 ? "" : " ") + words[i];
-    await new Promise((resolve) => setTimeout(resolve, 30 + Math.random() * 40));
+    await new Promise((resolve) => setTimeout(resolve, 8 + Math.random() * 12)); // Blazing fast 8-20ms delay per word
     yield chunk;
   }
 }

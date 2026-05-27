@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   app:
     build:
@@ -13,7 +11,7 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - NEXT_PUBLIC_APP_URL=http://localhost:3000
     volumes:
-      - sqlite-data:/app/prisma
+      - sqlite-data:/app/data
     restart: always
 
 volumes:
